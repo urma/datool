@@ -75,8 +75,19 @@ impl Hashes {
 }
 
 /// Compute hashes for a collection of files in parallel, preserving order.
-pub fn hash_files(paths: &[PathBuf]) -> Vec<Result<Hashes>> {
-    paths.par_iter().map(|p| Hashes::compute(p)).collect()
+/// `on_progress` is called once per completed file.
+pub fn hash_files<F>(paths: &[PathBuf], on_progress: F) -> Vec<Result<Hashes>>
+where
+    F: Fn(&Path) + Sync + Send,
+{
+    paths
+        .par_iter()
+        .map(|p| {
+            let hashes = Hashes::compute(p);
+            on_progress(p);
+            hashes
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -105,5 +116,27 @@ mod tests {
     fn crc32_known_answer() {
         // CRC-32 of "123456789" (standard check value: 0xCBF43926).
         assert_eq!(crc32(b"123456789"), 0xCBF43926);
+    }
+
+    #[test]
+    fn hash_files_reports_progress_for_every_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = ["a", "b", "c"]
+            .iter()
+            .map(|name| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, name.as_bytes()).unwrap();
+                path
+            })
+            .collect();
+        let completed = std::sync::atomic::AtomicUsize::new(0);
+
+        let hashes = hash_files(&paths, |_| {
+            completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        assert_eq!(hashes.len(), 3);
+        assert_eq!(completed.load(std::sync::atomic::Ordering::Relaxed), 3);
+        assert!(hashes.iter().all(|result| result.is_ok()));
     }
 }
