@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<datafile>
+	<header>
+		<id>46</id>
+		<name>Nintendo - Game Boy</name>
+		<description>Nintendo - Game Boy</description>
+		<version>20261126-143042</version>
+	</header>
+	<game name="[BIOS] Maxstation Boot ROM (China) (En) (Unl)" id="2130">
+		<description>[BIOS] Maxstation Boot ROM (China) (En) (Unl)</description>
+		<rom name="[BIOS] Maxstation Boot ROM (China) (En) (Unl).gb" size="256" crc="783e69c2" md5="77a7021db824010a678791f6d062943d" sha1="1776bd61b8db71fc4c4d4b5feab4a21b3c1fd95b" sha256="27e4bee8a8fddc80d48393a51fd9cdf33abc981a795f6aecc59a03a12daff881"/>
+	</game>
+</datafile>
