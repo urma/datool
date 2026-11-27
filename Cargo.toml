@@ -16,6 +16,6 @@ crc32fast = "1.4"
 md5 = "0.8"
 magic = "0.17"
 unarc-rs = "0.8"
-
-[dev-dependencies]
+zip = "2"
+sevenz-rust2 = { version = "0.27", default-features = false, features = ["compress"] }
 tempfile = "3"

@@ -54,6 +54,7 @@ mod tests {
                 crc32: 0,
                 size,
             },
+            archive_source: None,
         }
     }
 

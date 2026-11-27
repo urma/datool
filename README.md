@@ -50,6 +50,7 @@ Commands: `scan`, `dedupe`, `rename`, `copy`.
 | `--db <PATH>` | `scan`, `rename`, `copy` | **Required.** Hash database file (XML DAT) to match scanned files against. |
 | `--db-type <TYPE>` | `scan`, `rename`, `copy` | Database source type: `nointro` or `redump`. Overrides filename-based inference. |
 | `-s, --source <DIR>` | `copy` | Source directory to scan for ROMs. Defaults to the current directory. |
+| `--verify` | `rename` | After rewriting an archive, re-read it and verify the ROM entry's hashes against the original. |
 | `--verbose` | all commands | Print one `PROCESS` line per file/archive entry to stderr with its path, hashes, and size. |
 
 ### Database type inference
@@ -163,21 +164,24 @@ datool rename [OPTIONS]
 | `-p, --path <DIR>` | Directory to scan. Default: `.` |
 | `--db <PATH>` | **Required.** Hash database to match against |
 | `--db-type <TYPE>` | `nointro` or `redump`; overrides filename inference |
+| `--verify` | Re-read rewritten archives and verify ROM contents |
 
 **Expected behavior:**
 - Scans the directory and matches files against the database.
-- For each match, renames the file **in place** (same parent directory) to the entry's `title`/ROM name.
+- For plain files, renames each match **in place** (same parent directory) to the entry's `title`/ROM name.
+- For ZIP/7Z archive entries, creates a replacement archive in the same directory and format, named from the canonical ROM name with the original archive extension. The new archive contains exactly the matched ROM entry, stored under the canonical ROM name.
+- Archive rewriting is fail-safe: the original archive is removed only after the replacement has been written, optionally verified, persisted, and directory changes are synchronized. If the archive already has the canonical filename but its entry name differs, the archive is atomically replaced only after those checks succeed. Unrelated existing destination archives are never overwritten and remain untouched on failure.
 - Files already named correctly are skipped.
-- If a destination file already exists, the command aborts with an error (`destination already exists, skipping: <path>`).
+- If a destination file or archive already exists, the command aborts with an error (`destination already exists, skipping: <path>`).
 - Omitting `--db` is a CLI error.
-- **Archive caveat:** entries inside ZIP/7Z archives have virtual paths that do not exist on disk, so renaming them will fail. Use `rename` on extracted/plain ROM files.
+- `--verify` compares the rewritten ROM entry's SHA-256, MD5, CRC-32, and size to the original entry. Whole-archive hashes are intentionally not compared: changing an entry name and rewriting container metadata necessarily changes the archive bytes even when ROM contents are identical.
 
 **Sample usage:**
 
 ```bash
 datool rename --path /roms --db nointro.dat
 
-datool rename --path /roms --db database.xml --db-type redump
+datool rename --path /roms --db database.xml --db-type nointro --verify
 ```
 
 ---
@@ -200,9 +204,9 @@ datool copy [OPTIONS]
 **Expected behavior:**
 - Scans the source directory and matches files against the database.
 - Creates the destination directory if needed.
-- Copies each matched file to `<destination>/<entry title>`; existing destination files are overwritten by `std::fs::copy`.
+- Copies each matched plain file to `<destination>/<entry title>`; existing destination files are overwritten by `std::fs::copy`.
+- For archive entries, writes the decompressed ROM contents to `<destination>/<entry title>`; the internal virtual path is never used as a filesystem path.
 - Omitting `--db` is a CLI error.
-- **Archive caveat:** as with `rename`, virtual paths for archive entries cannot be used as copy sources.
 
 **Sample usage:**
 
@@ -219,7 +223,9 @@ datool copy --source /downloads --path /roms/library --db database.xml --db-type
 - Both **ZIP** and **7Z** archives are read in place; entries are never extracted to disk.
 - File types are detected with **libmagic** (via the `magic` crate) using MIME types (`application/zip`, `application/x-7z-compressed`) rather than header-byte sniffing.
 - Hashes are computed from decompressed entry data in memory.
-- Archive entries use their internal names as virtual paths. Identity for dedupe/matching is hash-based, so two entries with the same name only collide when their hashes are identical — in which case they are genuine duplicates.
+- Archive entries use their internal names as virtual paths for reporting and dedupe/matching. Identity is hash-based, so two entries with the same name only collide when their hashes are identical — in which case they are genuine duplicates.
+- `rename` can safely rewrite ZIP/7Z archives: it tracks the physical archive path, format, and entry name for every scanned entry, so virtual paths are never used as filesystem sources.
+- Archive writing uses the `zip` and `sevenz-rust2` crates; replacement archives are written to temporary files in the source directory before an atomic no-clobber rename.
 
 ## Testing
 
