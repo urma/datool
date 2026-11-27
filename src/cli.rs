@@ -1,3 +1,4 @@
+use crate::archive;
 use crate::db;
 use crate::dedupe;
 use crate::matcher;
@@ -61,6 +62,9 @@ pub enum Commands {
         /// Database source type (overrides filename-based inference)
         #[arg(long, value_enum)]
         db_type: Option<DbType>,
+        /// Re-read archives after rewriting and verify ROM contents
+        #[arg(long)]
+        verify: bool,
     },
     /// Copy matched ROMs to a target library
     Copy {
@@ -110,12 +114,27 @@ impl Cli {
                 }
                 println!("total duplicate groups: {}", groups.len());
             }
-            Commands::Rename { path, db, db_type } => {
+            Commands::Rename {
+                path,
+                db,
+                db_type,
+                verify,
+            } => {
                 let path = Path::new(path.as_deref().unwrap_or("."));
                 let files = scanner::scan_dir(path, self.verbose)?;
                 let db_source = db_type.as_ref().map(|t| t.to_string());
                 let index = db::load_db(Path::new(db.as_str()), db_source.as_deref())?;
                 for m in matcher::match_files(&files, &index) {
+                    if let Some(source) = &m.scanned.archive_source {
+                        archive::rename_archive_entry(
+                            source,
+                            &m.entry.title,
+                            *verify,
+                            &m.scanned.hashes,
+                        )?;
+                        continue;
+                    }
+
                     let source_path = m.scanned.path.clone();
                     let dest = source_path
                         .parent()
@@ -144,7 +163,16 @@ impl Cli {
                 for m in matcher::match_files(&files, &index) {
                     let dest_path = dest.join(&m.entry.title);
                     std::fs::create_dir_all(dest)?;
-                    std::fs::copy(&m.scanned.path, &dest_path)?;
+                    if let Some(source) = &m.scanned.archive_source {
+                        let data = archive::read_archive_entry_data(
+                            &source.path,
+                            source.format,
+                            &source.entry_name,
+                        )?;
+                        std::fs::write(&dest_path, data)?;
+                    } else {
+                        std::fs::copy(&m.scanned.path, &dest_path)?;
+                    }
                 }
             }
         }
@@ -166,6 +194,13 @@ mod tests {
         assert!(Cli::try_parse_from(["datool", "scan", "--db", "nointro_test.dat"]).is_ok());
         assert!(Cli::try_parse_from(["datool", "rename", "--db", "nointro_test.dat"]).is_ok());
         assert!(Cli::try_parse_from(["datool", "copy", "--db", "nointro_test.dat"]).is_ok());
+    }
+
+    #[test]
+    fn rename_accepts_verify_flag() {
+        let cli = Cli::try_parse_from(["datool", "rename", "--db", "nointro_test.dat", "--verify"])
+            .unwrap();
+        assert!(matches!(cli.command, Commands::Rename { verify: true, .. }));
     }
 
     #[test]

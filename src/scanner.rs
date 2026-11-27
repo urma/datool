@@ -1,3 +1,4 @@
+use crate::archive::{ArchiveEntrySource, ArchiveFormat};
 use crate::hash::{Hashes, hash_files};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -10,6 +11,8 @@ use unarc_rs::zip::zip_archive::ZipArchive;
 pub struct ScannedFile {
     pub path: PathBuf,
     pub hashes: Hashes,
+    /// Present when `path` is the internal name of an entry in an archive.
+    pub archive_source: Option<ArchiveEntrySource>,
 }
 
 fn is_hidden(path: &Path) -> bool {
@@ -52,38 +55,47 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
         let mime_type = cookie
             .file(&path)
             .map_err(|e| anyhow::anyhow!("Magic error: {}", e))?;
-        if mime_type == "application/zip" {
+        let archive_format = ArchiveFormat::from_mime(&mime_type);
+        if archive_format == Some(ArchiveFormat::Zip) {
             let file = std::fs::File::open(&path)?;
             let mut archive = ZipArchive::new(file)?;
             while let Some(header) = archive.get_next_entry()? {
                 if header.is_directory {
                     continue;
                 }
-                let data = archive.read(&header)?;
-                let hashes = Hashes::from_data(&data);
-                let virtual_path = PathBuf::from(&header.name);
+                let entry_name = header.name.clone();
+                let hashes = Hashes::from_data(&archive.read(&header)?);
                 let scanned = ScannedFile {
-                    path: virtual_path,
+                    path: PathBuf::from(&entry_name),
                     hashes,
+                    archive_source: Some(ArchiveEntrySource {
+                        path: path.clone(),
+                        format: ArchiveFormat::Zip,
+                        entry_name,
+                    }),
                 };
                 if verbose {
                     report_processed(&scanned);
                 }
                 files.push(scanned);
             }
-        } else if mime_type == "application/x-7z-compressed" {
+        } else if archive_format == Some(ArchiveFormat::SevenZ) {
             let file = std::fs::File::open(&path)?;
             let mut archive = SevenZArchive::new(file)?;
             while let Some(header) = archive.get_next_entry()? {
                 if header.is_directory {
                     continue;
                 }
-                let data = archive.read(&header)?;
-                let hashes = Hashes::from_data(&data);
-                let virtual_path = PathBuf::from(&header.name);
+                let entry_name = header.name.clone();
+                let hashes = Hashes::from_data(&archive.read(&header)?);
                 let scanned = ScannedFile {
-                    path: virtual_path,
+                    path: PathBuf::from(&entry_name),
                     hashes,
+                    archive_source: Some(ArchiveEntrySource {
+                        path: path.clone(),
+                        format: ArchiveFormat::SevenZ,
+                        entry_name,
+                    }),
                 };
                 if verbose {
                     report_processed(&scanned);
@@ -100,6 +112,7 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
         let scanned = ScannedFile {
             path: path.clone(),
             hashes: hashes?,
+            archive_source: None,
         };
         if verbose {
             report_processed(&scanned);
@@ -138,9 +151,12 @@ mod tests {
         let files = scan_dir(&root, false).unwrap();
 
         // Find the test.txt entry from the zip archive (virtual path)
-        let zip_entry = files
-            .iter()
-            .find(|f| f.path.as_path() == Path::new("test.txt"));
+        let zip_entry = files.iter().find(|f| {
+            f.path.as_path() == Path::new("test.txt")
+                && f.archive_source.as_ref().is_some_and(|source| {
+                    source.format == ArchiveFormat::Zip && source.entry_name == "test.txt"
+                })
+        });
         assert!(zip_entry.is_some(), "ZIP archive entry not found");
     }
 
@@ -153,7 +169,7 @@ mod tests {
         // so at least two entries should have the virtual path "test.txt"
         let test_entries: Vec<_> = files
             .iter()
-            .filter(|f| f.path.as_path() == Path::new("test.txt"))
+            .filter(|f| f.path.as_path() == Path::new("test.txt") && f.archive_source.is_some())
             .collect();
         assert!(
             test_entries.len() >= 2,

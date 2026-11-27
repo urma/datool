@@ -1,3 +1,4 @@
+mod archive;
 mod cli;
 mod db;
 mod dedupe;
