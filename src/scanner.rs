@@ -1,7 +1,10 @@
 use crate::archive::{ArchiveEntrySource, ArchiveFormat};
 use crate::hash::{Hashes, hash_files};
 use anyhow::Result;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use unarc_rs::sevenz::sevenz_archive::SevenZArchive;
 use unarc_rs::zip::zip_archive::ZipArchive;
@@ -32,6 +35,52 @@ fn report_processed(file: &ScannedFile) {
     );
 }
 
+/// Spinner shown on interactive terminals, independent of `--verbose`.
+struct ScanProgress {
+    bar: Option<ProgressBar>,
+}
+
+impl ScanProgress {
+    fn new() -> Self {
+        if !std::io::stderr().is_terminal() {
+            return Self { bar: None };
+        }
+        let bar = ProgressBar::new_spinner().with_style(
+            ProgressStyle::with_template("{spinner:.cyan} Scanning {pos} entries | {msg}")
+                .expect("valid progress template"),
+        );
+        bar.enable_steady_tick(Duration::from_millis(120));
+        bar.set_message("discovering files");
+        Self { bar: Some(bar) }
+    }
+
+    fn update(&self, message: impl Into<String>) {
+        if let Some(bar) = &self.bar {
+            bar.inc(1);
+            bar.set_message(message.into());
+        }
+    }
+
+    fn suspend<T>(&self, f: impl FnOnce() -> T) -> T {
+        match &self.bar {
+            Some(bar) => bar.suspend(f),
+            None => f(),
+        }
+    }
+
+    fn finish(&mut self) {
+        if let Some(bar) = self.bar.take() {
+            bar.finish_and_clear();
+        }
+    }
+}
+
+impl Drop for ScanProgress {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
 /// Recursively scan `root` for files, computing hashes for each.
 /// When `verbose` is true, each processed file is reported to stderr.
 pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
@@ -39,6 +88,7 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
         .load(&magic::cookie::DatabasePaths::default())
         .map_err(|e| anyhow::anyhow!("Failed to initialize magic: {}", e))?;
     let walker = walkdir::WalkDir::new(root).follow_links(false).into_iter();
+    let mut progress = ScanProgress::new();
 
     let mut files = Vec::new();
     let mut plain_paths = Vec::new();
@@ -64,6 +114,7 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
                     continue;
                 }
                 let entry_name = header.name.clone();
+                let message = format!("{}!{}", path.display(), entry_name);
                 let hashes = Hashes::from_data(&archive.read(&header)?);
                 let scanned = ScannedFile {
                     path: PathBuf::from(&entry_name),
@@ -74,8 +125,9 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
                         entry_name,
                     }),
                 };
+                progress.update(message);
                 if verbose {
-                    report_processed(&scanned);
+                    progress.suspend(|| report_processed(&scanned));
                 }
                 files.push(scanned);
             }
@@ -87,6 +139,7 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
                     continue;
                 }
                 let entry_name = header.name.clone();
+                let message = format!("{}!{}", path.display(), entry_name);
                 let hashes = Hashes::from_data(&archive.read(&header)?);
                 let scanned = ScannedFile {
                     path: PathBuf::from(&entry_name),
@@ -97,8 +150,9 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
                         entry_name,
                     }),
                 };
+                progress.update(message);
                 if verbose {
-                    report_processed(&scanned);
+                    progress.suspend(|| report_processed(&scanned));
                 }
                 files.push(scanned);
             }
@@ -108,17 +162,21 @@ pub fn scan_dir(root: &Path, verbose: bool) -> Result<Vec<ScannedFile>> {
             plain_paths.push(path);
         }
     }
-    for (path, hashes) in plain_paths.iter().zip(hash_files(&plain_paths)) {
+    let hashed = hash_files(&plain_paths, |path| {
+        progress.update(path.display().to_string());
+    });
+    for (path, hashes) in plain_paths.iter().zip(hashed) {
         let scanned = ScannedFile {
             path: path.clone(),
             hashes: hashes?,
             archive_source: None,
         };
         if verbose {
-            report_processed(&scanned);
+            progress.suspend(|| report_processed(&scanned));
         }
         files.push(scanned);
     }
+    progress.finish();
     Ok(files)
 }
 

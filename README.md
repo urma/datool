@@ -39,6 +39,8 @@ datool --version
 
 The global `--verbose` flag can be placed before or after the subcommand.
 
+Scan progress is shown separately on interactive terminals: a spinner reports each file/archive entry as it is hashed. It is independent of `--verbose` and is suppressed when stderr is not a terminal so piped output stays clean.
+
 Commands: `scan`, `dedupe`, `rename`, `copy`.
 
 ### Common flags
@@ -83,6 +85,7 @@ datool scan [OPTIONS]
 - Recursively walks the directory (does not follow symlinks); hidden files (names starting with `.`) are skipped.
 - Prints one `MATCH <path> -> <title>` line per matched file, then a summary: `scanned N files, M matched`.
 - ZIP and 7Z archives are inspected entry-by-entry without extraction; each entry is reported with its internal name as a virtual path.
+- A progress spinner on stderr shows the number of processed entries on interactive terminals; `--verbose` is not required.
 - Omitting `--db` is a CLI error; hashes are only calculated when they can be used for matching.
 
 **Sample usage:**
