@@ -225,7 +225,7 @@ datool copy --source /downloads --path /roms/library --db database.xml --db-type
 - Hashes are computed from decompressed entry data in memory.
 - Archive entries use their internal names as virtual paths for reporting and dedupe/matching. Identity is hash-based, so two entries with the same name only collide when their hashes are identical — in which case they are genuine duplicates.
 - `rename` can safely rewrite ZIP/7Z archives: it tracks the physical archive path, format, and entry name for every scanned entry, so virtual paths are never used as filesystem sources.
-- Archive writing uses the `zip` and `sevenz-rust2` crates; replacement archives are written to temporary files in the source directory before an atomic no-clobber rename.
+- Archive writing uses the `zip` and `sevenz-rust2` crates; replacement archives are written to temporary files in the source directory before an atomic no-clobber rename. On filesystems that do not support atomic no-replace rename (for example some removable volumes on macOS), datool reserves the destination with create-new semantics and then renames the verified temporary file into place; existing destinations are still never overwritten.
 
 ## Testing
 

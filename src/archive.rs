@@ -1,9 +1,9 @@
 use crate::hash::Hashes;
 use anyhow::{Context, Result, anyhow, bail};
-use std::fs::File;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, PersistError};
 use unarc_rs::sevenz::sevenz_archive::SevenZArchive;
 use unarc_rs::zip::zip_archive::ZipArchive;
 
@@ -145,6 +145,70 @@ fn sync_dir(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `renameat2(RENAME_NOREPLACE)` / `renamex_np(RENAME_EXCL)` is not supported by
+/// every filesystem (notably some removable/media volumes on macOS).
+fn is_unsupported_persist_error(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported || error.raw_os_error() == Some(45)
+}
+
+fn persist_reserved(temp: NamedTempFile, destination: &Path) -> Result<File> {
+    let reservation = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .with_context(|| format!("failed to reserve destination {}", destination.display()))?;
+
+    #[cfg(unix)]
+    let reservation_id = {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = reservation.metadata()?;
+        (metadata.dev(), metadata.ino())
+    };
+    drop(reservation);
+
+    match temp.persist(destination) {
+        Ok(file) => Ok(file),
+        Err(err) => {
+            // Only remove the placeholder if it is still the one we created.
+            let is_our_placeholder = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    std::fs::metadata(destination)
+                        .map(|metadata| (metadata.dev(), metadata.ino()) == reservation_id)
+                        .unwrap_or(false)
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            };
+            if is_our_placeholder {
+                let _ = std::fs::remove_file(destination);
+            }
+            Err(anyhow!(
+                "failed to persist {}: {}",
+                destination.display(),
+                err.error
+            ))
+        }
+    }
+}
+
+fn persist_new(temp: NamedTempFile, destination: &Path) -> Result<File> {
+    match temp.persist_noclobber(destination) {
+        Ok(file) => Ok(file),
+        Err(PersistError { error, file }) if is_unsupported_persist_error(&error) => {
+            persist_reserved(file, destination)
+        }
+        Err(PersistError { error, .. }) => Err(anyhow!(
+            "failed to persist {}: {}",
+            destination.display(),
+            error
+        )),
+    }
+}
+
 /// Replace an archive with a new archive of the same format containing the
 /// matched ROM under its canonical name.
 ///
@@ -204,10 +268,10 @@ pub fn rename_archive_entry(
 
     let persisted = if replacing_source {
         temp.persist(&destination)
+            .map_err(|e| anyhow!("failed to persist {}: {}", destination.display(), e))?
     } else {
-        temp.persist_noclobber(&destination)
-    }
-    .map_err(|e| anyhow!("failed to persist {}: {}", destination.display(), e))?;
+        persist_new(temp, &destination)?
+    };
     persisted.sync_all()?;
     drop(persisted);
     sync_dir(parent)?;
@@ -369,6 +433,43 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(&source.path).unwrap(), before);
+    }
+
+    #[test]
+    fn reserved_persist_never_clobbers_an_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut temp = NamedTempFile::new_in(dir.path()).unwrap();
+        temp.write_all(b"new").unwrap();
+        let destination = dir.path().join("destination.zip");
+        std::fs::write(&destination, b"existing").unwrap();
+
+        let result = persist_reserved(temp, &destination);
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
+    }
+
+    #[test]
+    fn reserved_persist_writes_the_temporary_file_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut temp = NamedTempFile::new_in(dir.path()).unwrap();
+        temp.write_all(b"new").unwrap();
+        let destination = dir.path().join("destination.zip");
+
+        let file = persist_reserved(temp, &destination).unwrap();
+        drop(file);
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+    }
+
+    #[test]
+    fn recognizes_unsupported_noreplace_errors() {
+        assert!(is_unsupported_persist_error(&io::Error::from_raw_os_error(
+            45
+        )));
+        assert!(!is_unsupported_persist_error(&io::Error::from(
+            io::ErrorKind::AlreadyExists
+        )));
     }
 
     #[test]
