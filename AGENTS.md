@@ -21,7 +21,8 @@ Toolchain: Rust `1.100.0` via `mise.toml` (`rust = "1.100.0"`).
 
 ## CLI notes
 
-- `--db <PATH>` + `--db-type <nointro|redump>`: hash DB to match against. `--db-type` overrides filename-based inference.
+- `--db <PATH>` is required for `scan`, `rename`, and `copy` (all commands that match files against a DB); `--db-type <nointro|redump>` is optional because it overrides filename-based inference. `dedupe` does not take a DB.
+- Global `--verbose` (usable before or after the subcommand) reports each processed file/archive entry on stderr as `PROCESS <path> sha256=... md5=... crc32=... size=...`.
 - **Archive support**: datool handles ZIP and 7Z archives without extraction:
   - **File type detection**: Uses `magic` crate (libmagic) to detect MIME types (`application/zip`, `application/x-7z-compressed`) rather than simple header-byte matching.
   - **Virtual paths**: Archive entries use their internal names as virtual paths (e.g., `rom.bin`) to avoid conflicts with physical files.

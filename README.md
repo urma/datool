@@ -30,10 +30,12 @@ Run directly with `cargo run -- <command> ...`, or use the built binary at `targ
 ## Global usage
 
 ```bash
-datool <COMMAND> [OPTIONS]
+datool [--verbose] <COMMAND> [OPTIONS]
 datool --help
 datool --version
 ```
+
+The global `--verbose` flag can be placed before or after the subcommand.
 
 Commands: `scan`, `dedupe`, `rename`, `copy`.
 
@@ -43,9 +45,10 @@ Commands: `scan`, `dedupe`, `rename`, `copy`.
 |------|-----------|-------------|
 | `-p, --path <PATH>` | `scan`, `dedupe`, `rename` | Directory to scan. Defaults to the current directory (`.`). |
 | `--path <PATH>` | `copy` | Destination directory. Defaults to the current directory. |
-| `--db <PATH>` | `scan`, `rename`, `copy` | Hash database file (XML DAT) to match scanned files against. Optional for `scan`. |
+| `--db <PATH>` | `scan`, `rename`, `copy` | **Required.** Hash database file (XML DAT) to match scanned files against. |
 | `--db-type <TYPE>` | `scan`, `rename`, `copy` | Database source type: `nointro` or `redump`. Overrides filename-based inference. |
 | `-s, --source <DIR>` | `copy` | Source directory to scan for ROMs. Defaults to the current directory. |
+| `--verbose` | all commands | Print one `PROCESS` line per file/archive entry to stderr with its path, hashes, and size. |
 
 ### Database type inference
 
@@ -61,7 +64,7 @@ NoIntro entries carry SHA-256; Redump entries carry MD5 + CRC-32. Matching tries
 
 ## `scan`
 
-Scan a directory, compute hashes, and optionally match against a database.
+Scan a directory, compute hashes, and match against a database.
 
 ```bash
 datool scan [OPTIONS]
@@ -70,36 +73,42 @@ datool scan [OPTIONS]
 | Flag | Description |
 |------|-------------|
 | `-p, --path <DIR>` | Directory to scan. Default: `.` |
-| `--db <PATH>` | Optional hash database to match against |
+| `--db <PATH>` | **Required.** Hash database to match against |
 | `--db-type <TYPE>` | `nointro` or `redump`; overrides filename inference |
 
 **Expected behavior:**
 - Recursively walks the directory (does not follow symlinks); hidden files (names starting with `.`) are skipped.
 - Prints one `MATCH <path> -> <title>` line per matched file, then a summary: `scanned N files, M matched`.
 - ZIP and 7Z archives are inspected entry-by-entry without extraction; each entry is reported with its internal name as a virtual path.
-- Without `--db`, the summary reports `0 matched`.
+- Omitting `--db` is a CLI error; hashes are only calculated when they can be used for matching.
 
 **Sample usage:**
 
 ```bash
-# Scan the current directory only
-datool scan
+# Scan the current directory against a NoIntro DAT
+datool scan --db nointro.dat
 
-# Scan a ROM folder
-datool scan --path /roms
-
-# Scan and match against a NoIntro DAT
-datool scan --path /roms --db nointro.dat
+# Scan a ROM folder against a Redump DAT
+datool scan --path /roms --db redump.dat
 
 # Explicit DB type (needed if filename gives no hint)
 datool scan --path /roms --db database.xml --db-type redump
+
+# Show per-file processing details
+datool --verbose scan --path /roms --db nointro.dat
 ```
 
 Example output:
 
 ```text
-MATCH /roms/Game (USA).zip -> Game (USA).bin
+MATCH /roms/Game (USA).bin -> Game (USA).bin
 scanned 3 files, 1 matched
+```
+
+With `--verbose`, each scanned file or archive entry is also reported on stderr:
+
+```text
+PROCESS /roms/Game (USA).bin sha256=a3f5...c21 md5=... crc32=783e69c2 size=256
 ```
 
 ---
@@ -150,7 +159,7 @@ datool rename [OPTIONS]
 | Flag | Description |
 |------|-------------|
 | `-p, --path <DIR>` | Directory to scan. Default: `.` |
-| `--db <PATH>` | Hash database to match against (required for any renaming to happen) |
+| `--db <PATH>` | **Required.** Hash database to match against |
 | `--db-type <TYPE>` | `nointro` or `redump`; overrides filename inference |
 
 **Expected behavior:**
@@ -158,7 +167,7 @@ datool rename [OPTIONS]
 - For each match, renames the file **in place** (same parent directory) to the entry's `title`/ROM name.
 - Files already named correctly are skipped.
 - If a destination file already exists, the command aborts with an error (`destination already exists, skipping: <path>`).
-- Without `--db`, nothing is renamed.
+- Omitting `--db` is a CLI error.
 - **Archive caveat:** entries inside ZIP/7Z archives have virtual paths that do not exist on disk, so renaming them will fail. Use `rename` on extracted/plain ROM files.
 
 **Sample usage:**
@@ -183,14 +192,14 @@ datool copy [OPTIONS]
 |------|-------------|
 | `-s, --source <DIR>` | Source directory to scan. Default: `.` |
 | `--path <DIR>` | Destination directory. Default: `.` |
-| `--db <PATH>` | Hash database to match against (required for any copying to happen) |
+| `--db <PATH>` | **Required.** Hash database to match against |
 | `--db-type <TYPE>` | `nointro` or `redump`; overrides filename inference |
 
 **Expected behavior:**
 - Scans the source directory and matches files against the database.
 - Creates the destination directory if needed.
 - Copies each matched file to `<destination>/<entry title>`; existing destination files are overwritten by `std::fs::copy`.
-- Without `--db`, nothing is copied.
+- Omitting `--db` is a CLI error.
 - **Archive caveat:** as with `rename`, virtual paths for archive entries cannot be used as copy sources.
 
 **Sample usage:**

@@ -23,6 +23,9 @@ impl std::fmt::Display for DbType {
 #[derive(Debug, Parser)]
 #[command(name = "datool", version, about = "Manage ROM collections")]
 pub struct Cli {
+    /// Print information about each file processed (to stderr)
+    #[arg(long, global = true)]
+    pub verbose: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -36,7 +39,7 @@ pub enum Commands {
         path: Option<String>,
         /// Hash database file to match against
         #[arg(long)]
-        db: Option<String>,
+        db: String,
         /// Database source type (overrides filename-based inference)
         #[arg(long, value_enum)]
         db_type: Option<DbType>,
@@ -54,7 +57,7 @@ pub enum Commands {
         path: Option<String>,
         /// Hash database file to match against
         #[arg(long)]
-        db: Option<String>,
+        db: String,
         /// Database source type (overrides filename-based inference)
         #[arg(long, value_enum)]
         db_type: Option<DbType>,
@@ -69,7 +72,7 @@ pub enum Commands {
         path: Option<String>,
         /// Hash database file to match against
         #[arg(long)]
-        db: Option<String>,
+        db: String,
         /// Database source type (overrides filename-based inference)
         #[arg(long, value_enum)]
         db_type: Option<DbType>,
@@ -81,15 +84,10 @@ impl Cli {
         match &self.command {
             Commands::Scan { path, db, db_type } => {
                 let path = Path::new(path.as_deref().unwrap_or("."));
-                let files = scanner::scan_dir(path)?;
-                let matches = if let Some(db) = db {
-                    let source: Option<String> = db_type.map(|t| t.to_string());
-                    let source_str: Option<&str> = source.as_deref();
-                    let index = db::load_db(Path::new(&db), source_str)?;
-                    matcher::match_files(&files, &index)
-                } else {
-                    Vec::new()
-                };
+                let files = scanner::scan_dir(path, self.verbose)?;
+                let db_source = db_type.as_ref().map(|t| t.to_string());
+                let index = db::load_db(Path::new(db.as_str()), db_source.as_deref())?;
+                let matches = matcher::match_files(&files, &index);
                 for m in &matches {
                     println!("MATCH {} -> {}", m.scanned.path.display(), m.entry.title);
                 }
@@ -97,7 +95,7 @@ impl Cli {
             }
             Commands::Dedupe { path } => {
                 let path = Path::new(path.as_deref().unwrap_or("."));
-                let files = scanner::scan_dir(path)?;
+                let files = scanner::scan_dir(path, self.verbose)?;
                 let groups = dedupe::find_duplicates(&files);
                 for group in &groups {
                     println!(
@@ -114,29 +112,22 @@ impl Cli {
             }
             Commands::Rename { path, db, db_type } => {
                 let path = Path::new(path.as_deref().unwrap_or("."));
-                let files = scanner::scan_dir(path)?;
-                if let Some(db) = db {
-                    let source: Option<String> = db_type.map(|t| t.to_string());
-                    let source_str: Option<&str> = source.as_deref();
-                    let index = db::load_db(Path::new(&db), source_str)?;
-                    let matches = matcher::match_files(&files, &index);
-                    for m in matches {
-                        let source_path = m.scanned.path.clone();
-                        let dest = source_path
-                            .parent()
-                            .unwrap_or(Path::new("."))
-                            .join(&m.entry.title);
-                        if source_path == dest {
-                            continue;
-                        }
-                        if dest.exists() {
-                            anyhow::bail!(
-                                "destination already exists, skipping: {}",
-                                dest.display()
-                            );
-                        }
-                        std::fs::rename(&source_path, &dest)?;
+                let files = scanner::scan_dir(path, self.verbose)?;
+                let db_source = db_type.as_ref().map(|t| t.to_string());
+                let index = db::load_db(Path::new(db.as_str()), db_source.as_deref())?;
+                for m in matcher::match_files(&files, &index) {
+                    let source_path = m.scanned.path.clone();
+                    let dest = source_path
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join(&m.entry.title);
+                    if source_path == dest {
+                        continue;
                     }
+                    if dest.exists() {
+                        anyhow::bail!("destination already exists, skipping: {}", dest.display());
+                    }
+                    std::fs::rename(&source_path, &dest)?;
                 }
             }
             Commands::Copy {
@@ -147,20 +138,44 @@ impl Cli {
             } => {
                 let source = Path::new(source.as_deref().unwrap_or("."));
                 let dest = Path::new(path.as_deref().unwrap_or("."));
-                let files = scanner::scan_dir(source)?;
-                if let Some(db) = db {
-                    let source: Option<String> = db_type.map(|t| t.to_string());
-                    let source_str: Option<&str> = source.as_deref();
-                    let index = db::load_db(Path::new(&db), source_str)?;
-                    let matches = matcher::match_files(&files, &index);
-                    for m in matches {
-                        let dest_path = dest.join(&m.entry.title);
-                        std::fs::create_dir_all(dest)?;
-                        std::fs::copy(&m.scanned.path, &dest_path)?;
-                    }
+                let files = scanner::scan_dir(source, self.verbose)?;
+                let db_source = db_type.as_ref().map(|t| t.to_string());
+                let index = db::load_db(Path::new(db.as_str()), db_source.as_deref())?;
+                for m in matcher::match_files(&files, &index) {
+                    let dest_path = dest.join(&m.entry.title);
+                    std::fs::create_dir_all(dest)?;
+                    std::fs::copy(&m.scanned.path, &dest_path)?;
                 }
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn db_is_required_for_matching_commands() {
+        assert!(Cli::try_parse_from(["datool", "scan"]).is_err());
+        assert!(Cli::try_parse_from(["datool", "rename"]).is_err());
+        assert!(Cli::try_parse_from(["datool", "copy"]).is_err());
+
+        assert!(Cli::try_parse_from(["datool", "scan", "--db", "nointro_test.dat"]).is_ok());
+        assert!(Cli::try_parse_from(["datool", "rename", "--db", "nointro_test.dat"]).is_ok());
+        assert!(Cli::try_parse_from(["datool", "copy", "--db", "nointro_test.dat"]).is_ok());
+    }
+
+    #[test]
+    fn verbose_is_a_global_flag() {
+        let cli = Cli::try_parse_from(["datool", "--verbose", "scan", "--db", "nointro_test.dat"])
+            .unwrap();
+        assert!(cli.verbose);
+
+        let cli =
+            Cli::try_parse_from(["datool", "dedupe", "--verbose", "--path", "/roms"]).unwrap();
+        assert!(cli.verbose);
     }
 }
