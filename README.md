@@ -1,5 +1,7 @@
 # datool
 
+[![Build/Tests](https://github.com/urma/datool/actions/workflows/rust.yml/badge.svg)](https://github.com/urma/datool/actions/workflows/rust.yml)
+
 A Rust CLI for managing ROM collections. It scans directories, computes content hashes, matches files against NoIntro/Redump databases, finds duplicates, and can rename or copy matched ROMs.
 
 ## Requirements
